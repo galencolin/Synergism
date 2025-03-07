@@ -1443,6 +1443,7 @@ export const calculateOffline = (forceTime = 0, fromTips = false) => {
     addTimers('transcension', timeTick)
     addTimers('reincarnation', timeTick)
     addTimers('octeracts', timeTick)
+    addTimers('autoPotion', timeTick)
 
     resourceGain(timeTick * G.timeMultiplier)
 
