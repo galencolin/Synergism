@@ -3164,7 +3164,7 @@ export const format = (
       }K`
     }
     return `${format(mantissa, accuracy, long)} / ${Math.pow(10, -power)}`
-  } else if (power < 6 || (long && power < 7)) {
+  } else if (power < 6 || (long && power < 12)) {
     // If the power is less than 6 or format long and less than 7 use standard formatting (1,234,567)
     // Gets the standard representation of the number, safe as power is guaranteed to be > -12 and < 7
     let standard = mantissa * Math.pow(10, power)
@@ -3206,7 +3206,7 @@ export const format = (
     // Makes mantissa be rounded down to 2 decimal places
     const mantissaLook = testing && truncate
       ? ''
-      : (Math.floor(mantissa * 100) / 100).toLocaleString(undefined, locOpts)
+      : (Math.floor(mantissa * 10000) / 10000).toLocaleString(undefined, locOpts)
 
     // Drops the power down to 4 digits total but never greater than 1000 in increments that equate to notations, (1234000 -> 1.234) ( 12340000 -> 12.34) (123400000 -> 123.4) (1234000000 -> 1.234)
     const powerDigits = Math.ceil(Math.log10(power))
