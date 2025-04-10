@@ -3,10 +3,10 @@ import { DOMCacheGetOrSet } from './Cache/DOM'
 import { campaignTokenRewardHTMLUpdate } from './Campaign'
 import type { IUpgradeData } from './DynamicUpgrade'
 import { DynamicUpgrade } from './DynamicUpgrade'
-import { format, player } from './Synergism'
+import { format, player, deepClone } from './Synergism'
 import type { Player } from './types/Synergism'
 import { Alert, Prompt, revealStuff } from './UpdateHTML'
-import { sumContents, toOrdinal } from './Utility'
+import { sumContents, toOrdinal, assert } from './Utility'
 
 export const updateSingularityPenalties = (): void => {
   const singularityCount = player.singularityCount
@@ -122,6 +122,65 @@ function getSingularityOridnalText (singularityCount: number): string {
   })
 }
 
+// the cost is base * (1 + lv) * lv^2 / 5000 past lv400
+// sum cost from wolfram alpha
+function generalDefaultSumCost (level: number): number {
+    return level * (level + 1) * (level + 2) * (3 * level + 1) / 12 / 5000
+}
+
+let lookupTableDefaultCosts: number[] | null = null
+let lookupTableDefaultSumCosts: number[]
+
+function singUpgradeDefaultSumCost (level: number, base: number): number {
+    const specialLevels = 2500
+    if (lookupTableDefaultCosts === null) {
+        let dummy = new SingularityUpgrade({specialCostForm: 'Default', maxLevel: -1, costPerLevel: base}, 'goldenQuarks1')
+
+        lookupTableDefaultCosts = Array.from({ length: specialLevels }, (_, i) => {
+            dummy.level = i
+            return dummy.getCostTNL()
+        })
+
+        let sumCost = 0
+        lookupTableDefaultSumCosts = lookupTableDefaultCosts.map(val => {
+            sumCost += val
+            return sumCost
+        })
+    }
+
+    if (level == 0) return 0
+    if (level <= specialLevels) return lookupTableDefaultSumCosts[level - 1]
+
+    let cost = lookupTableDefaultSumCosts[specialLevels - 1]
+    cost += generalDefaultSumCost(level - 1) - generalDefaultSumCost(specialLevels - 1)
+
+    return Math.ceil(cost)
+}
+
+function numError (expected: number, val: number): number {
+    return Math.abs(expected - val) / Math.max(1, expected)
+}
+
+function testOptimizedBuy (upgrade: SingularityUpgrade) {
+    let dummy = deepClone()(upgrade)
+    assert(dummy.maxLevel === -1) // this function will be nonsense otherwise
+    assert(dummy.specialCostForm === 'Default') // likewise
+    assert(upgrade.getSumCost !== undefined) // for ts
+    dummy.level = 0
+
+    // check: sumcost function matches manual sum of costs
+    const sumCheck = 1e6
+    let sumCost = 0
+    for (let i = 1; i < sumCheck; i++) {
+        sumCost += dummy.getCostTNL()
+        dummy.level = i
+        let funcCost = upgrade.getSumCost(i)
+        assert(numError(sumCost, funcCost) < 1e-6, `sum cost mismatch at level ${i}: expected ${sumCost}, got ${funcCost}`)
+    }
+
+    console.log("optimized buy tests passed: ", upgrade)
+}
+
 // Need a better way of handling the ones without a special formulae than 'Default' variant
 type SingularitySpecialCostFormulae =
   | 'Default'
@@ -135,6 +194,7 @@ export interface ISingularityData extends Omit<IUpgradeData, 'name' | 'descripti
   canExceedCap?: boolean
   specialCostForm?: SingularitySpecialCostFormulae
   qualityOfLife?: boolean
+  getSumCost?(level: number): number
   cacheUpdates?: (() => void)[] // TODO: Improve this type signature -Plat
 }
 
@@ -163,6 +223,7 @@ export class SingularityUpgrade extends DynamicUpgrade {
     this.specialCostForm = data.specialCostForm ?? 'Default'
     this.qualityOfLife = data.qualityOfLife ?? false
     this.cacheUpdates = data.cacheUpdates ?? undefined
+    this.getSumCost = data.getSumCost ?? undefined
     this.#key = key
   }
 
@@ -268,6 +329,31 @@ export class SingularityUpgrade extends DynamicUpgrade {
       : Math.ceil(this.costPerLevel * (1 + this.level) * costMultiplier)
   }
 
+  public optimizedBuy (budget: number, startLevel: number): number {
+    assert(this.getSumCost !== undefined, "optimized buy requires a sumCost implementation")
+    budget += this.getSumCost(startLevel)
+
+    let lo = startLevel, hi = startLevel + 1
+    while (this.getSumCost(hi) <= budget) {
+        hi *= 2
+    }
+
+    while (hi - lo > 0.5) {
+        const mid = (lo + hi) / 2
+        if (mid === lo || mid === hi) {
+            break
+        }
+
+        if (this.getSumCost(mid) <= budget) {
+            lo = mid
+        } else {
+            hi = mid
+        }
+    }
+
+    return lo
+  }
+
   /**
    * Buy levels up until togglebuy or maxed.
    * @returns An alert indicating cannot afford, already maxed or purchased with how many
@@ -277,6 +363,8 @@ export class SingularityUpgrade extends DynamicUpgrade {
     let purchased = 0
     let maxPurchasable = 1
     let GQBudget = player.goldenQuarks
+
+    this.level = 0
 
     if (event.shiftKey) {
       maxPurchasable = 100000
@@ -317,28 +405,40 @@ export class SingularityUpgrade extends DynamicUpgrade {
     if (player.highestSingularityCount < this.minimumSingularity) {
       return Alert(i18next.t('singularity.goldenQuarks.notHighEnoughLevel'))
     }
-    while (maxPurchasable > 0) {
-      const cost = this.getCostTNL()
-      if (player.goldenQuarks < cost || GQBudget < cost) {
-        break
-      } else {
-        player.goldenQuarks -= cost
-        GQBudget -= cost
-        this.goldenQuarksInvested += cost
-        this.level += 1
-        purchased += 1
-        maxPurchasable -= 1
-      }
-      if (this.name === player.singularityUpgrades.oneMind.name) {
-        player.ascensionCounter = 0
-        player.ascensionCounterReal = 0
-        player.ascensionCounterRealReal = 0
-        void Alert(i18next.t('singularity.goldenQuarks.ascensionReset'))
-      }
+    if (this.getSumCost !== undefined) {
+        GQBudget = player.goldenQuarks = 1e50
+        testOptimizedBuy(this)
 
-      if (this.name === player.singularityUpgrades.singCitadel2.name) {
-        player.singularityUpgrades.singCitadel.freeLevels = player.singularityUpgrades.singCitadel2.level
-      }
+        let buyable = this.optimizedBuy(GQBudget, this.level) - this.level
+        let cost = this.getSumCost(buyable + this.level) - this.getSumCost(this.level)
+        player.goldenQuarks -= cost
+        this.goldenQuarksInvested += cost
+        this.level += buyable
+        purchased = buyable
+    } else {
+        while (maxPurchasable > 0) {
+            const cost = this.getCostTNL()
+            if (player.goldenQuarks < cost || GQBudget < cost) {
+              break
+            } else {
+              player.goldenQuarks -= cost
+              GQBudget -= cost
+              this.goldenQuarksInvested += cost
+              this.level += 1
+              purchased += 1
+              maxPurchasable -= 1
+            }
+            if (this.name === player.singularityUpgrades.oneMind.name) {
+              player.ascensionCounter = 0
+              player.ascensionCounterReal = 0
+              player.ascensionCounterRealReal = 0
+              void Alert(i18next.t('singularity.goldenQuarks.ascensionReset'))
+            }
+      
+            if (this.name === player.singularityUpgrades.singCitadel2.name) {
+              player.singularityUpgrades.singCitadel.freeLevels = player.singularityUpgrades.singCitadel2.level
+            }
+          }
     }
 
     if (purchased === 0) {
@@ -758,6 +858,7 @@ export const singularityData: Record<
   singCubes1: {
     maxLevel: -1,
     costPerLevel: 1,
+    getSumCost: (level: number) => singUpgradeDefaultSumCost(level, 1),
     effect: (n: number) => {
       return {
         bonus: 1 + 0.006 * n,

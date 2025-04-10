@@ -666,6 +666,7 @@ export const playerSchema = z.object({
             new SingularityUpgrade({
               maxLevel: singularityData[k].maxLevel,
               costPerLevel: singularityData[k].costPerLevel,
+              getSumCost: singularityData[k].getSumCost,
 
               level: level as number,
               goldenQuarksInvested,

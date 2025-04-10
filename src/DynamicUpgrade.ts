@@ -22,6 +22,7 @@ export abstract class DynamicUpgrade {
   readonly costPerLevel: number
   public toggleBuy = 1 // -1 = buy MAX (or 1000 in case of infinity levels!)
   readonly effect: (n: number) => { bonus: number | boolean; desc: string }
+  public getSumCost?: (level: number) => number
 
   constructor (data: IUpgradeData) {
     this.name = data.name
